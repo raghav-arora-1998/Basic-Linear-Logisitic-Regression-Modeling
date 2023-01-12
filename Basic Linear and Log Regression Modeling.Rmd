@@ -1,0 +1,177 @@
+---
+title: "Modeling_Activity"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(here)
+library(tidymodels)
+```
+
+## Step 1: Read and clean the data
+
+```{r, message = FALSE}
+churn <- read_csv(here("Data", "churn.csv"))
+```
+
+```{r}
+churn <- churn %>%
+  mutate(
+    Geography = factor(Geography),
+    Gender = factor(Gender),
+    HasCrCard = factor(HasCrCard,
+                       levels = c("0", "1"),
+                       labels = c("No", "Yes")),
+    IsActiveMember = factor(IsActiveMember,
+                       levels = c("0", "1"),
+                       labels = c("No", "Yes")),
+    Exited = factor(Exited,
+                       levels = c("0", "1"),
+                       labels = c("No", "Yes")),
+  ) %>%
+  select(-Surname)
+```
+
+
+
+## (Old version: fit a linear model)
+
+```{r}
+my_model <- lm(Balance ~ Age, data = churn)
+
+my_model
+
+summary(my_model)
+```
+
+There is a significant relationship between Age and Balance. 
+
+0.08% of the variance in Balance is explained by Age.
+
+## Step 2:  Specify your model(s)
+
+
+```{r}
+lin_reg_spec <- linear_reg() %>%
+  set_mode("regression") %>%
+  set_engine("lm")
+
+lin_reg_spec
+
+log_reg_spec <- logistic_reg() %>%
+  set_mode("classification") %>%
+  set_engine("glm")
+```
+
+
+
+
+## Step 3:  Preprocess your data
+
+```{r}
+summary(churn)
+
+churn_rec <- recipe(Balance ~ ., data = churn) %>%
+  update_role(CustomerId, RowNumber, new_role = "ID") %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_log(EstimatedSalary) %>%
+  step_zv(all_predictors())
+
+churn_rec
+
+
+churn_wflow <- workflow() %>%
+  add_model(lin_reg_spec) %>%
+  add_recipe(churn_rec)
+
+churn_wflow
+
+churn_rec_log <- recipe(Exited ~ ., data = churn) %>%
+  update_role(CustomerId, RowNumber, new_role = "ID") %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_log(EstimatedSalary) %>%
+  step_zv(all_predictors())
+
+churn_wflow_log <- workflow() %>%
+  add_model(log_reg_spec) %>%
+  add_recipe(churn_rec_log)
+  
+```
+
+
+
+## Step 4:  Split into test/training sets
+
+```{r}
+set.seed(48378)
+
+churn_split <- initial_split(churn, prop = 3/4)
+
+churn_train <- training(churn_split)
+churn_test <- testing(churn_split)
+```
+
+
+
+## Step 5:  Fit to the training set
+
+```{r}
+churn_lm_fit <- churn_wflow %>%
+  fit(churn_train)
+
+churn_lm_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+
+
+## Step 6:  Predict on the test set and validate
+
+```{r}
+churn_lm_fit %>%
+  predict(churn_test)
+
+churn_test <- churn_test %>%
+  mutate(
+    predictions = predict(churn_lm_fit, churn_test)$.pred
+  )
+
+churn_test %>%
+  bind_cols(predict(churn_lm_fit, churn_test))
+
+
+churn_test %>%
+  ggplot() +
+  geom_point(aes(x = Balance, y = predictions))
+
+churn_test %>%
+  rsq(truth = Balance,
+      estimate = predictions)
+```
+
+
+
+## Step 7:  Select your final model and fit on all the data
+
+```{r}
+churn_cv <- vfold_cv(churn, v = 5)
+
+churn_cv_fits <- churn_wflow %>%
+  fit_resamples(resamples = churn_cv)
+
+churn_cv_fits %>%
+  collect_metrics()
+
+churn_cv_fit_log <- churn_wflow_log %>%
+  fit_resamples(resamples = churn_cv)
+
+churn_cv_fit_log %>%
+  collect_metrics()
+```
+
